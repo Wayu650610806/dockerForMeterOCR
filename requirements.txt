@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+ultralytics
+python-multipart
+opencv-python-headless
+numpy
+# torch is installed via Dockerfile using the CPU-only wheel
+httpx

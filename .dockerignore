@@ -1,0 +1,9 @@
+.git
+.gitattributes
+README.md
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*

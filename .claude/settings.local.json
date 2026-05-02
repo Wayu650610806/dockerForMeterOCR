@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker version *)",
+      "Bash(docker info *)",
+      "Bash(docker build *)",
+      "Read(//tmp/**)",
+      "Bash(echo \"EXIT_CODE: $?\")",
+      "Bash(docker push *)",
+      "PowerShell(docker version *)"
+    ]
+  }
+}
