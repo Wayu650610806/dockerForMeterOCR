@@ -32,6 +32,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: wayu199/meter-ocr
+          tags: |
+            type=raw,value=v1
+            type=raw,value=latest
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
