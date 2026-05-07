@@ -180,7 +180,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_PATHS = {
     "obb":   BASE_DIR / "weights" / "model1_mvp100_yolo26m_obb_v2.pt",
-    "id":    BASE_DIR / "weights" / "model3_id_mvp50_yolo26m.pt",
+    "id":    BASE_DIR / "weights" / "model3_id_mvp100_yolo26m.pt",
     "elec":  BASE_DIR / "weights" / "model2_elec_mvp100_yolo11m_fix.pt",
     "water": BASE_DIR / "weights" / "model2_water_mvp100_yolo26m.pt",
 }

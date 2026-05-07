@@ -35,7 +35,7 @@ jobs:
         with:
           images: wayu199/meter-ocr
           tags: |
-            type=raw,value=v1
+            type=raw,value=v2
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
