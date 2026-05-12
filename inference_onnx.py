@@ -242,10 +242,29 @@ class ONNXModel:
         self._input_name = self._session.get_inputs()[0].name
         self._nc         = len(names)
 
-        # Detect E2E vs raw format from the output shape
-        out_shape = self._session.get_outputs()[0].shape  # e.g. [1, 300, 7] or [1, 14, 8400]
+        # Detect ONNX output format from shape.
+        # Three possible layouts from ultralytics export:
+        #   E2E (NMS baked in):      [1, max_det, geom+2]  e.g. [1, 300, 7] for OBB
+        #   Raw needs-transpose:     [1, geom+nc, N]        e.g. [1, 9, 8400] for OBB nc=4
+        #   Raw pre-transposed:      [1, N, geom+nc]        e.g. [1, 8400, 9] for OBB nc=4
+        # The old heuristic (d1 > d2) can't distinguish E2E from pre-transposed raw
+        # because both have the anchor/det count in d1. Use the column count (d2) instead.
+        geom = 5 if task == "obb" else 4
+        e2e_cols = geom + 2  # OBB: 7 = cx,cy,w,h,angle,conf,cls  |  Detect: 6 = x1,y1,x2,y2,conf,cls
+        raw_cols  = geom + self._nc
+
+        out_shape = self._session.get_outputs()[0].shape
         d1, d2 = out_shape[1], out_shape[2]
-        self._e2e = (isinstance(d1, int) and isinstance(d2, int) and d1 > d2)
+
+        if isinstance(d2, int) and d2 == e2e_cols:
+            self._e2e            = True
+            self._pre_transposed = False          # [1, max_det, e2e_cols]
+        elif isinstance(d1, int) and d1 == raw_cols:
+            self._e2e            = False
+            self._pre_transposed = False          # [1, geom+nc, N] → needs .T
+        else:
+            self._e2e            = False
+            self._pre_transposed = True           # [1, N, geom+nc] → already per-row
 
     def to(self, device):   # no-op for API compatibility with app.py
         return self
@@ -287,9 +306,10 @@ class ONNXModel:
         return ONNXOBBResult(
             ONNXOBBData(corners, pred[:, 5], pred[:, 6].astype(int)), orig_img)
 
-    # ── Raw detection: [1, 4+nc, N] ──────────────────────────────────────────
+    # ── Raw detection: [1, 4+nc, N] or [1, N, 4+nc] ─────────────────────────
     def _post_detect_raw(self, outputs, orig_img, ratio, dw, dh, conf_t, iou_t):
-        pred = outputs[0][0].T              # [N, 4+nc]
+        raw  = outputs[0][0]
+        pred = raw if self._pre_transposed else raw.T   # → [N, 4+nc]
         cls_scores = pred[:, 4:4 + self._nc]
         conf   = cls_scores.max(axis=1)
         cls_id = cls_scores.argmax(axis=1)
@@ -306,9 +326,10 @@ class ONNXModel:
         return ONNXDetectResult(
             ONNXBoxes(boxes[keep], conf[keep], cls_id[keep]), orig_img)
 
-    # ── Raw OBB: [1, 5+nc, N] ────────────────────────────────────────────────
+    # ── Raw OBB: [1, 5+nc, N] or [1, N, 5+nc] ───────────────────────────────
     def _post_obb_raw(self, outputs, orig_img, ratio, dw, dh, conf_t, iou_t):
-        pred = outputs[0][0].T              # [N, 5+nc]
+        raw  = outputs[0][0]
+        pred = raw if self._pre_transposed else raw.T   # → [N, 5+nc]
         cls_scores = pred[:, 5:5 + self._nc]
         conf   = cls_scores.max(axis=1)
         cls_id = cls_scores.argmax(axis=1)
