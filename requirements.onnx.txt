@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-multipart
+opencv-python-headless
+numpy
+httpx
+# onnxruntime is installed separately in the Dockerfile (v3 vs v4 use different variants)

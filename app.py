@@ -1,7 +1,6 @@
 import os
 import cv2
 import numpy as np
-import torch
 import httpx
 import uuid
 import asyncio
@@ -12,9 +11,13 @@ from pydantic import BaseModel, Field, HttpUrl
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Security, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
-from ultralytics import YOLO
 import uvicorn
 from datetime import datetime, timedelta
+
+USE_ONNX = os.getenv("USE_ONNX", "0") == "1"
+if not USE_ONNX:
+    import torch
+    from ultralytics import YOLO
 
 # =========================================================
 # คอนฟิกจำกัดการใช้ทรัพยากร (Rate Limit / Concurrency)
@@ -175,31 +178,36 @@ async def verify_api_key(api_key: str = Security(api_key_header)):
     return api_key
 
 # ---------------------------------------------------------
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 BASE_DIR = Path(__file__).resolve().parent
 
-MODEL_PATHS = {
-    "obb":   BASE_DIR / "weights" / "model1_mvp100_yolo26m_obb_v2.pt",
-    "id":    BASE_DIR / "weights" / "model3_id_mvp100_yolo26m.pt",
-    "elec":  BASE_DIR / "weights" / "model2_elec_mvp100_yolo11m_fix.pt",
-    "water": BASE_DIR / "weights" / "model2_water_mvp100_yolo26m.pt",
-}
-
-models = {}
-missing_models = []
-
-for name, path in MODEL_PATHS.items():
-    if path.exists():
-        models[name] = YOLO(str(path)).to(DEVICE)
-    else:
-        missing_models.append(name)
-
-if missing_models:
-    error_msg = f"CRITICAL ERROR: Missing model weight files: {missing_models}. Please check the 'weights' directory."
-    print(error_msg)
-    raise RuntimeError(error_msg)
+if USE_ONNX:
+    from inference_onnx import load_onnx_models
+    models = load_onnx_models(BASE_DIR)
 else:
-    print(f"✅ All {len(models)} models loaded successfully on {DEVICE.upper()}.")
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    MODEL_PATHS = {
+        "obb":   BASE_DIR / "weights" / "model1_mvp100_yolo26m_obb_v2.pt",
+        "id":    BASE_DIR / "weights" / "model3_id_mvp100_yolo26m.pt",
+        "elec":  BASE_DIR / "weights" / "model2_elec_mvp100_yolo11m_fix.pt",
+        "water": BASE_DIR / "weights" / "model2_water_mvp100_yolo26m.pt",
+    }
+
+    models = {}
+    missing_models = []
+
+    for name, path in MODEL_PATHS.items():
+        if path.exists():
+            models[name] = YOLO(str(path)).to(DEVICE)
+        else:
+            missing_models.append(name)
+
+    if missing_models:
+        error_msg = f"CRITICAL ERROR: Missing model weight files: {missing_models}. Please check the 'weights' directory."
+        print(error_msg)
+        raise RuntimeError(error_msg)
+    else:
+        print(f"✅ All {len(models)} models loaded successfully on {DEVICE.upper()}.")
 
 # ---------------------------------------------------------
 # 3. HELPER FUNCTIONS
