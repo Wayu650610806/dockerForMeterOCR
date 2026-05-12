@@ -16,9 +16,9 @@ RUN useradd -m appuser
 
 COPY requirements.onnx.txt .
 
-# Install onnxruntime (CPU-only variant – smaller package, no GPU code paths)
+# onnxruntime has wheels for both amd64 and arm64; ORT_CPU_ONLY=1 enforces CPU-only at runtime
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --timeout 300 onnxruntime-cpu
+    pip install --timeout 300 onnxruntime
 
 # Install remaining dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \

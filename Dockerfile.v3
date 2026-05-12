@@ -19,9 +19,13 @@ RUN useradd -m appuser
 
 COPY requirements.onnx.txt .
 
-# Install onnxruntime-gpu (includes CUDA support; falls back to CPU if no GPU)
+# onnxruntime-gpu only has amd64 wheels on PyPI; arm64 gets cpu-only onnxruntime
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --timeout 300 onnxruntime-gpu
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        pip install --timeout 300 onnxruntime-gpu; \
+    else \
+        pip install --timeout 300 onnxruntime; \
+    fi
 
 # Install remaining dependencies
 RUN --mount=type=cache,target=/root/.cache/pip \
