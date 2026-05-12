@@ -5,10 +5,10 @@ Replaces ultralytics/torch with onnxruntime + numpy only.
 Handles two ONNX output formats produced by ultralytics export:
   - E2E (end-to-end NMS already in model):
       detect: [1, max_det, 6]  values = [x1,y1,x2,y2, conf, cls_id]
-      obb:    [1, max_det, 7]  values = [cx,cy,w,h, angle_rad, conf, cls_id]
+      obb:    [1, max_det, 7]  values = [cx,cy,w,h, conf, cls_id, angle_rad]
   - Raw (no NMS, needs post-processing):
       detect: [1, 4+nc, N]     values = [cx,cy,w,h, cls_scores...]
-      obb:    [1, 5+nc, N]     values = [cx,cy,w,h, angle_rad, cls_scores...]
+      obb:    [1, 5+nc, N]     values = [cx,cy,w,h, cls_scores..., angle_rad]
 """
 import os
 import json
@@ -167,6 +167,17 @@ def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_thresh: float = 0.45):
     return keep
 
 
+def _class_aware_nms(boxes_xyxy: np.ndarray, scores: np.ndarray,
+                     cls_ids: np.ndarray, iou_thresh: float = 0.45):
+    keep = []
+    for cls in np.unique(cls_ids):
+        idx = np.where(cls_ids == cls)[0]
+        cls_keep = _nms(boxes_xyxy[idx], scores[idx], iou_thresh)
+        keep.extend(idx[cls_keep].tolist())
+    keep.sort(key=lambda i: float(scores[i]), reverse=True)
+    return keep
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # OBB corner computation
 # ──────────────────────────────────────────────────────────────────────────────
@@ -214,10 +225,10 @@ class ONNXModel:
     Auto-detects ONNX output format at load time:
       E2E (end-to-end NMS baked in):  output[0].shape[1] > output[0].shape[2]
         detect: [1, max_det, 6]  → [x1,y1,x2,y2, conf, cls_id]
-        obb:    [1, max_det, 7]  → [cx,cy,w,h, angle_rad, conf, cls_id]
+        obb:    [1, max_det, 7]  → [cx,cy,w,h, conf, cls_id, angle_rad]
       Raw (needs post-processing):     output[0].shape[1] < output[0].shape[2]
         detect: [1, 4+nc, N]
-        obb:    [1, 5+nc, N]
+        obb:    [1, 5+nc, N] with angle after class scores
     """
 
     def __init__(self, onnx_path: str, task: str, names: dict,
@@ -293,18 +304,19 @@ class ONNXModel:
         boxes = _undo_letterbox_boxes(pred[:, :4], ratio, dw, dh, orig_img.shape[:2])
         return ONNXDetectResult(ONNXBoxes(boxes, pred[:, 4], pred[:, 5].astype(int)), orig_img)
 
-    # ── E2E OBB: [1, max_det, 7]  [cx,cy,w,h, angle_rad, conf, cls_id] ──────
+    # ── E2E OBB: [1, max_det, 7]  [cx,cy,w,h, conf, cls_id, angle_rad] ──────
     def _post_obb_e2e(self, outputs, orig_img, ratio, dw, dh, conf_t, iou_t):
         pred = outputs[0][0]                # [max_det, 7]
-        mask = pred[:, 5] > conf_t
+        mask = pred[:, 4] > conf_t
         pred = pred[mask]
         if len(pred) == 0:
             return ONNXOBBResult(
                 ONNXOBBData(np.empty((0, 4, 2), np.float32), [], []), orig_img)
-        xywhr   = _undo_letterbox_xywhr(pred[:, :5], ratio, dw, dh)
+        xywhr   = np.concatenate([pred[:, :4], pred[:, 6:7]], axis=1)
+        xywhr   = _undo_letterbox_xywhr(xywhr, ratio, dw, dh)
         corners = _xywhr_to_corners(xywhr)
         return ONNXOBBResult(
-            ONNXOBBData(corners, pred[:, 5], pred[:, 6].astype(int)), orig_img)
+            ONNXOBBData(corners, pred[:, 4], pred[:, 5].astype(int)), orig_img)
 
     # ── Raw detection: [1, 4+nc, N] or [1, N, 4+nc] ─────────────────────────
     def _post_detect_raw(self, outputs, orig_img, ratio, dw, dh, conf_t, iou_t):
@@ -320,7 +332,7 @@ class ONNXModel:
         cx, cy, w, h = pred[:, 0], pred[:, 1], pred[:, 2], pred[:, 3]
         boxes = np.stack([cx - w/2, cy - h/2, cx + w/2, cy + h/2], axis=1)
         boxes = _undo_letterbox_boxes(boxes, ratio, dw, dh, orig_img.shape[:2])
-        keep  = _nms(boxes, conf, iou_t)
+        keep  = _class_aware_nms(boxes, conf, cls_id, iou_t)
         if not keep:
             return ONNXDetectResult(None, orig_img)
         return ONNXDetectResult(
@@ -330,7 +342,7 @@ class ONNXModel:
     def _post_obb_raw(self, outputs, orig_img, ratio, dw, dh, conf_t, iou_t):
         raw  = outputs[0][0]
         pred = raw if self._pre_transposed else raw.T   # → [N, 5+nc]
-        cls_scores = pred[:, 5:5 + self._nc]
+        cls_scores = pred[:, 4:4 + self._nc]
         conf   = cls_scores.max(axis=1)
         cls_id = cls_scores.argmax(axis=1)
         mask   = conf > conf_t
@@ -338,12 +350,13 @@ class ONNXModel:
             return ONNXOBBResult(
                 ONNXOBBData(np.empty((0, 4, 2), np.float32), [], []), orig_img)
         pred, conf, cls_id = pred[mask], conf[mask], cls_id[mask]
-        xywhr   = _undo_letterbox_xywhr(pred[:, :5], ratio, dw, dh)
+        xywhr   = np.concatenate([pred[:, :4], pred[:, 4 + self._nc:5 + self._nc]], axis=1)
+        xywhr   = _undo_letterbox_xywhr(xywhr, ratio, dw, dh)
         corners = _xywhr_to_corners(xywhr)
         x_min, y_min = corners[:, :, 0].min(axis=1), corners[:, :, 1].min(axis=1)
         x_max, y_max = corners[:, :, 0].max(axis=1), corners[:, :, 1].max(axis=1)
         aabb  = np.stack([x_min, y_min, x_max, y_max], axis=1)
-        keep  = _nms(aabb, conf, iou_t)
+        keep  = _class_aware_nms(aabb, conf, cls_id, iou_t)
         if not keep:
             return ONNXOBBResult(
                 ONNXOBBData(np.empty((0, 4, 2), np.float32), [], []), orig_img)
